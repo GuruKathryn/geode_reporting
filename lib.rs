@@ -131,6 +131,8 @@ mod geode_suspicious_activity_reporting {
     pub enum Error {
         // trying to report twice in 24 hours
         CannotReportAgainWithin24Hours,
+        // generic error
+        GenericError
     }
 
     // ACTUAL CONTRACT STORAGE >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
@@ -167,7 +169,10 @@ mod geode_suspicious_activity_reporting {
             }
         }
 
-        // MESSGE FUNCTIONS THAT ALTER CONTRACT STORAGE >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // MESSGE FUNCTIONS THAT ALTER CONTRACT STORAGE >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         
         // 🟢 MAKE A REPORT (ANYONE)
         #[ink(message)]
@@ -229,28 +234,6 @@ mod geode_suspicious_activity_reporting {
         }
 
 
-        // MESSAGE FUNCTIONS THAT RETRIEVE DATA FROM STORAGE  >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-
-        // 🟢 VIEW ALL REPORTS (RESTRICTED: GEODE LEGAL OR DELEGATE OR ALLOWED ENTITIY)
-        // this message is restricted to two types of users...
-        // Geode Legal - a single account in charge of SAR information requests
-        // Law Enforcement Entities - verified entities that can be given permission
-        // to view reports by the Geode Legal account.
-        #[ink(message)]
-        pub fn view_all_reports(&self) -> Vec<Report> {
-            let caller = Self::env().caller();
-            // check that the caller is on one of the allowed lists
-            if self.allowed_entities.contains(&caller) || self.geode_legal_delegates.contains(&caller) {
-                // proceed...
-                let allreports = self.reports.clone();
-                allreports
-            }
-            else {
-                let allreports = <Vec<Report>>::default();
-                allreports
-            }
-        }
-
         // 🟢 SET GEODE LEGAL ROOT ACCOUNT
         // This message lets us set the root geode legal account one time, in the beginning
         #[ink(message)]
@@ -260,7 +243,7 @@ mod geode_suspicious_activity_reporting {
             organization: Vec<u8>,
             phone: Vec<u8>,
             email: Vec<u8>,
-        ) -> u8 {
+        ) -> Result<(), Error> {
             let caller = Self::env().caller();
             // check that the Geode Legal root user is not yet set
             if self.geodelegalset != 1 {
@@ -285,8 +268,7 @@ mod geode_suspicious_activity_reporting {
                     };
                     self.allowed_user_map.insert(&new_geode_legal_root, &new_user);
                 }
-                let success: u8 = 1;
-                success
+                
             }
             else {
                 // if the geode legal root user has already been set, 
@@ -312,15 +294,13 @@ mod geode_suspicious_activity_reporting {
                         };
                         self.allowed_user_map.insert(&new_geode_legal_root, &new_user);
                     }
-                    let success: u8 = 2;
-                    success
                 }
                 else {
-                    // if the root is set, and the caller is not the root
-                    let fail: u8 = 0;
-                    fail
+                    // if the root is set, and the caller is not the root, error
+                    return Err(Error::GenericError)
                 }
             }
+            Ok(())
         }
 
 
@@ -333,7 +313,7 @@ mod geode_suspicious_activity_reporting {
             organization: Vec<u8>,
             phone: Vec<u8>,
             email: Vec<u8>,
-        ) -> u8 {
+        ) -> Result<(), Error> {
             // check that the caller is on the delegates list
             let caller = Self::env().caller();
             if self.geode_legal_delegates.contains(&caller) {
@@ -354,21 +334,19 @@ mod geode_suspicious_activity_reporting {
                     };
                     self.allowed_user_map.insert(&add, &new_user);
                 }
-                // report success
-                let success: u8 = 1;
-                success
             }
             else {
-                // return fail
-                let fail: u8 = 0;
-                fail
+                // error
+                return Err(Error::GenericError)
             }
+            Ok(())
         }
+
 
         // 🟢 REMOVE GEODE LEGAL DELEGATE (RESTRICTED: GEODE LEGAL OR DELEGATE)
         // This message lets Geode Legal team accounts remove accounts from the legal team 
         #[ink(message)]
-        pub fn remove_geode_legal_delegate(&mut self, remove: AccountId) -> u8 {
+        pub fn remove_geode_legal_delegate(&mut self, remove: AccountId) -> Result<(), Error> {
             // check that the caller is on the delegates list
             let caller = Self::env().caller();
             if self.geode_legal_delegates.contains(&caller) {
@@ -376,15 +354,13 @@ mod geode_suspicious_activity_reporting {
                 self.geode_legal_delegates.retain(|value| *value != remove);
                 // remove them from allowed_user_map
                 self.allowed_user_map.remove(remove);
-                // report success
-                let success: u8 = 1;
-                success
             }
             // if not, return fail
             else {
-                let fail: u8 = 0;
-                fail
+                // error
+                return Err(Error::GenericError)
             }
+            Ok(())
         }
 
 
@@ -397,7 +373,7 @@ mod geode_suspicious_activity_reporting {
             organization: Vec<u8>,
             phone: Vec<u8>,
             email: Vec<u8>,
-        ) -> u8 {
+        ) -> Result<(), Error> {
             // check that the caller is on the delegates list
             let caller = Self::env().caller();
             if self.geode_legal_delegates.contains(&caller) {
@@ -418,21 +394,18 @@ mod geode_suspicious_activity_reporting {
                     };
                     self.allowed_user_map.insert(&add, &new_user);
                 }
-                // report success
-                let success: u8 = 1;
-                success
             }
             else {
-                // return fail
-                let fail: u8 = 0;
-                fail
+                // error
+                return Err(Error::GenericError)
             }
+            Ok(())
         }
 
 
         // 🟢 REMOVE A LAW ENFORCEMENT ENTITY'S ACCESS (RESTRICTED: GEODE LEGAL OR DELEGATE)
         #[ink(message)]
-        pub fn remove_law_enforcement_access(&mut self, remove: AccountId) -> u8 {
+        pub fn remove_law_enforcement_access(&mut self, remove: AccountId) -> Result<(), Error> {
             // check that the caller is on the delegates list
             let caller = Self::env().caller();
             if self.geode_legal_delegates.contains(&caller) {
@@ -440,14 +413,37 @@ mod geode_suspicious_activity_reporting {
                 self.allowed_entities.retain(|value| *value != remove);
                 // remove them from allowed_user_map
                 self.allowed_user_map.remove(remove);
-                // report success
-                let success: u8 = 1;
-                success
             }
             // if not, return fail
             else {
-                let fail: u8 = 0;
-                fail
+                // error
+                return Err(Error::GenericError)
+            }
+            Ok(())
+        }
+
+
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // MESSAGE FUNCTIONS THAT RETRIEVE DATA FROM STORAGE  >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+        // 🟢 VIEW ALL REPORTS (RESTRICTED: GEODE LEGAL OR DELEGATE OR ALLOWED ENTITIY)
+        // this message is restricted to two types of users...
+        // Geode Legal - a single account in charge of SAR information requests
+        // Law Enforcement Entities - verified entities that can be given permission
+        // to view reports by the Geode Legal account.
+        #[ink(message)]
+        pub fn view_all_reports(&self) -> Vec<Report> {
+            let caller = Self::env().caller();
+            // check that the caller is on one of the allowed lists
+            if self.allowed_entities.contains(&caller) || self.geode_legal_delegates.contains(&caller) {
+                // proceed...
+                let allreports = self.reports.clone();
+                allreports
+            }
+            else {
+                let allreports = <Vec<Report>>::default();
+                allreports
             }
         }
 
