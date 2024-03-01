@@ -1,31 +1,25 @@
 /*
 ABOUT THIS CONTRACT...
 This contract offers a way for users to report suspicious and illegal activity
-across accounts and apps on the Geode Blockchain Network.
+across accounts and apps on the Geode Blockchain Network, and to let law enforcement 
+entities into the system to act on illegal activity.
 */
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(feature = "std"), no_std, no_main)]
 
 #[ink::contract]
-mod geode_suspicious_activity_reporting {
+mod geode_reporting {
 
     use ink::prelude::vec::Vec;
     use ink::storage::Mapping;
+    use ink::storage::StorageVec;
     use ink::env::hash::{Sha2x256, HashOutput};
 
     // PRELIMINARY DATA STRUCTURES >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-    #[derive(Clone, scale::Decode, scale::Encode)]
-    #[cfg_attr(
-        feature = "std",
-        derive(
-            ink::storage::traits::StorageLayout, 
-            scale_info::TypeInfo,
-            Debug,
-            PartialEq,
-            Eq
-        )
-    )]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[ink::scale_derive(Encode, Decode, TypeInfo)]
+    #[cfg_attr(feature = "std",derive(ink::storage::traits::StorageLayout,))]
     pub struct Report {
         report_id: Hash,
         reporter_account: AccountId,
@@ -42,14 +36,12 @@ mod geode_suspicious_activity_reporting {
     
     impl Default for Report {
         fn default() -> Report {
-            let default_addy = "000000000000000000000000000000000000000000000000";
-            let default_addy_id32: AccountId = default_addy.as_bytes().try_into().unwrap();
             Report {
                 report_id: Hash::default(),
-                reporter_account: default_addy_id32,
+                reporter_account: AccountId::from([0x0; 32]),
                 reporter_legal_name: <Vec<u8>>::default(),
                 reporter_phone: <Vec<u8>>::default(),
-                accused_account: default_addy_id32,
+                accused_account: AccountId::from([0x0; 32]),
                 geode_apps: <Vec<u8>>::default(),
                 activity_id_list: <Vec<u8>>::default(),
                 crime_category: <Vec<u8>>::default(),
@@ -60,17 +52,9 @@ mod geode_suspicious_activity_reporting {
         }
     }
 
-    #[derive(Clone, scale::Decode, scale::Encode)]
-    #[cfg_attr(
-        feature = "std",
-        derive(
-            ink::storage::traits::StorageLayout, 
-            scale_info::TypeInfo,
-            Debug,
-            PartialEq,
-            Eq
-        )
-    )]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[ink::scale_derive(Encode, Decode, TypeInfo)]
+    #[cfg_attr(feature = "std",derive(ink::storage::traits::StorageLayout,))]
     pub struct UserDetails {
         user_acct: AccountId,
         name: Vec<u8>,
@@ -81,10 +65,8 @@ mod geode_suspicious_activity_reporting {
 
     impl Default for UserDetails {
         fn default() -> UserDetails {
-            let default_addy = "000000000000000000000000000000000000000000000000";
-            let default_addy_id32: AccountId = default_addy.as_bytes().try_into().unwrap();
             UserDetails {
-                user_acct: default_addy_id32,
+                user_acct: AccountId::from([0x0; 32]),
                 name: <Vec<u8>>::default(),
                 organization: <Vec<u8>>::default(),
                 phone: <Vec<u8>>::default(),
@@ -93,17 +75,9 @@ mod geode_suspicious_activity_reporting {
         }
     }
 
-    #[derive(Clone, scale::Decode, scale::Encode)]
-    #[cfg_attr(
-        feature = "std",
-        derive(
-            ink::storage::traits::StorageLayout, 
-            scale_info::TypeInfo,
-            Debug,
-            PartialEq,
-            Eq
-        )
-    )]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[ink::scale_derive(Encode, Decode, TypeInfo)]
+    #[cfg_attr(feature = "std",derive(ink::storage::traits::StorageLayout,))]
     pub struct ViewAllowed {
         delegates: Vec<UserDetails>,
         entities: Vec<UserDetails>,
@@ -120,31 +94,52 @@ mod geode_suspicious_activity_reporting {
 
 
     // EVENT DEFINITIONS >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    // no events will be written to the chain. 
+
+    #[ink(event)]
+    // writes a new report to the chain. 
+    pub struct NewSAReport {
+        report_id: Hash,
+        #[ink(topic)]
+        reporter_account: AccountId,
+        #[ink(topic)]
+        accused_account: AccountId,
+        geode_apps: Vec<u8>,
+        activity_id_list: Vec<u8>,
+        crime_category: Vec<u8>,
+        #[ink(topic)]
+        accused_location: Vec<u8>,
+        timestamp: u64,
+    }
 
 
     // ERROR DEFINITIONS >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
     // Errors that can occur upon calling this contract
-    #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
-    #[cfg_attr(feature = "std", derive(::scale_info::TypeInfo))]
+    #[derive(Debug, PartialEq, Eq)]
+    #[ink::scale_derive(Encode, Decode, TypeInfo)]
     pub enum Error {
         // trying to report twice in 24 hours
         CannotReportAgainWithin24Hours,
         // generic error
-        GenericError
+        GenericError,
+        // Data to large
+        DataTooLarge,
     }
+
 
     // ACTUAL CONTRACT STORAGE >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     #[ink(storage)]
     pub struct ContractStorage {
         account_timer: Mapping<AccountId, u64>,
-        reports: Vec<Report>,
-        allowed_entities: Vec<AccountId>,
-        geode_legal_delegates: Vec<AccountId>,
+        all_reports: Vec<Hash>,
+        report_details: Mapping<Hash, Report>,
+        allowed_entities: Mapping<AccountId, AccountId>,
+        geode_legal_delegates: Mapping<AccountId, AccountId>,
         geode_legal: AccountId,
         geodelegalset: u8,
         allowed_user_map: Mapping<AccountId, UserDetails>,
+        entities_vec: StorageVec<AccountId>,
+        delegates_vec: StorageVec<AccountId>,
     }
 
     // CONTRACT LOGIC >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
@@ -156,16 +151,17 @@ mod geode_suspicious_activity_reporting {
 
         #[ink(constructor)]
         pub fn new() -> Self {
-            let default_addy = "000000000000000000000000000000000000000000000000";
-            let default_addy_id32: AccountId = default_addy.as_bytes().try_into().unwrap();
             Self {
                 account_timer: Mapping::default(),
-                reports: <Vec<Report>>::default(),
-                allowed_entities: <Vec<AccountId>>::default(),
-                geode_legal_delegates: <Vec<AccountId>>::default(),
-                geode_legal: default_addy_id32,
-                geodelegalset: u8::default(),
+                all_reports: <Vec<Hash>>::default(),
+                report_details: Mapping::default(),
+                allowed_entities: Mapping::default(),
+                geode_legal_delegates: Mapping::default(),
+                geode_legal: AccountId::from([0x0; 32]),
+                geodelegalset: 0,
                 allowed_user_map: Mapping::default(),
+                entities_vec: StorageVec::default(),
+                delegates_vec: StorageVec::default(),
             }
         }
 
@@ -174,7 +170,7 @@ mod geode_suspicious_activity_reporting {
         // MESSGE FUNCTIONS THAT ALTER CONTRACT STORAGE >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         
-        // 🟢 MAKE A REPORT (ANYONE)
+        // 0 🟢 MAKE A REPORT (ANYONE)
         #[ink(message)]
         pub fn make_a_report(&mut self, 
             your_legal_name: Vec<u8>,
@@ -191,7 +187,7 @@ mod geode_suspicious_activity_reporting {
 
             // check that caller has not made a report in the last 24 hours
             let timer = self.account_timer.get(&caller).unwrap_or_default();
-            let time_since_last_report = self.env().block_timestamp() - timer;
+            let time_since_last_report = self.env().block_timestamp().wrapping_sub(timer);
             if time_since_last_report < 86400000 {
                 // send an error that interest cannot be updated so soon
                 return Err(Error::CannotReportAgainWithin24Hours)
@@ -217,16 +213,44 @@ mod geode_suspicious_activity_reporting {
                     reporter_legal_name: your_legal_name,
                     reporter_phone: your_phone,
                     accused_account: accused_account,
-                    geode_apps: geode_apps_where_this_happened,
-                    activity_id_list: activity_clone,
-                    crime_category: crime_category,
+                    geode_apps: geode_apps_where_this_happened.clone(),
+                    activity_id_list: activity_clone.clone(),
+                    crime_category: crime_category.clone(),
                     crime_description: crime_description,
-                    accused_location: accused_user_location,
+                    accused_location: accused_user_location.clone(),
                     timestamp: new_timestamp,
                 };
                 // update contract storage
-                self.reports.push(new_report);
+                // if all_reports is full, keep only the 490 most recent hashes
+                if self.all_reports.len() < 490 {
+                    // all is well
+                }
+                else {
+                    // if all_reports hits 490, remove the oldest report.
+                    let oldest_id = self.all_reports[0];
+                    self.all_reports.remove(0);
+                    self.report_details.remove(oldest_id);
+                }
+                // add the report id to the vector of all_reports
+                self.all_reports.push(new_report_id);
+                // add the details to the report_details mapping
+                if self.report_details.try_insert(&new_report_id, &new_report).is_err() {
+                    return Err(Error::DataTooLarge);
+                }
+                
                 self.account_timer.insert(&caller, &new_timestamp);
+
+                // Emit an event to register the report to the chain
+                Self::env().emit_event(NewSAReport {
+                    report_id: new_report_id,
+                    reporter_account: caller,
+                    accused_account: accused_account,
+                    geode_apps: geode_apps_where_this_happened,
+                    activity_id_list: activity_clone,
+                    crime_category: crime_category,
+                    accused_location: accused_user_location,
+                    timestamp: new_timestamp,
+                });
                 
                 Ok(())
             }
@@ -234,7 +258,7 @@ mod geode_suspicious_activity_reporting {
         }
 
 
-        // 🟢 SET GEODE LEGAL ROOT ACCOUNT
+        // 1 🟢 SET GEODE LEGAL ROOT ACCOUNT
         // This message lets us set the root geode legal account one time, in the beginning
         #[ink(message)]
         pub fn set_geode_legal_root(&mut self, 
@@ -246,66 +270,46 @@ mod geode_suspicious_activity_reporting {
         ) -> Result<(), Error> {
             let caller = Self::env().caller();
             // check that the Geode Legal root user is not yet set
-            if self.geodelegalset != 1 {
-                // proceed to set up the root user for the first time
+            if self.geodelegalset != 1 || self.geode_legal == caller {
+                // proceed to set up the root user
                 self.geode_legal = new_geode_legal_root;
                 self.geodelegalset = 1;
+
                 // add the root user to the delegates team
-                // if the new root is already in the vector, do nothing
                 if self.geode_legal_delegates.contains(&new_geode_legal_root) {
                     // do nothing
                 }
                 else {
                     // add the new root to the delegates list
-                    self.geode_legal_delegates.push(new_geode_legal_root);
-                    // add the new root to the allowed_user_map
-                    let new_user = UserDetails {
-                        user_acct: new_geode_legal_root,
-                        name: name,
-                        organization: organization,
-                        phone: phone,
-                        email: email,
-                    };
-                    self.allowed_user_map.insert(&new_geode_legal_root, &new_user);
+                    self.geode_legal_delegates.insert(&new_geode_legal_root, &new_geode_legal_root);
+                    // and to the delegates_vec
+                    self.delegates_vec.push(&new_geode_legal_root);
                 }
                 
+                // add the new root or update their info in the allowed_user_map
+                let new_user = UserDetails {
+                    user_acct: new_geode_legal_root,
+                    name: name,
+                    organization: organization,
+                    phone: phone,
+                    email: email,
+                };
+                if self.allowed_user_map.try_insert(&new_geode_legal_root, &new_user).is_err() {
+                    return Err(Error::DataTooLarge);
+                }        
+
             }
             else {
-                // if the geode legal root user has already been set, 
-                // make sure the caller is that root user
-                if self.geode_legal == caller {
-                    // proceed to update the geode legal root user
-                    self.geode_legal = new_geode_legal_root;
-                    // add the root user to the delegates team
-                    // if the new root is already in the vector, do nothing
-                    if self.geode_legal_delegates.contains(&new_geode_legal_root) {
-                        // do nothing
-                    }
-                    else {
-                        // add the new root to the delegates list
-                        self.geode_legal_delegates.push(new_geode_legal_root);
-                        // add the new root to the allowed_user_map
-                        let new_user = UserDetails {
-                            user_acct: new_geode_legal_root,
-                            name: name,
-                            organization: organization,
-                            phone: phone,
-                            email: email,
-                        };
-                        self.allowed_user_map.insert(&new_geode_legal_root, &new_user);
-                    }
-                }
-                else {
-                    // if the root is set, and the caller is not the root, error
-                    return Err(Error::GenericError)
-                }
+                // if the geode legal root user has already been set 
+                // and the caller is not that root user, send an error
+                return Err(Error::GenericError)
             }
             Ok(())
         }
 
 
-        // 🟢 ADD GEODE LEGAL DELEGATE (RESTRICTED: GEODE LEGAL OR DELEGATE)
-        // This message lets Geode Legal team accounts add accounts to the legal team 
+        // 2 🟢 ADD GEODE LEGAL DELEGATE (RESTRICTED: GEODE LEGAL ROOT ONLY)
+        // This message lets the Geode Legal root add accounts to the legal team 
         #[ink(message)]
         pub fn add_geode_legal_delegate(&mut self, 
             add: AccountId,
@@ -314,48 +318,57 @@ mod geode_suspicious_activity_reporting {
             phone: Vec<u8>,
             email: Vec<u8>,
         ) -> Result<(), Error> {
-            // check that the caller is on the delegates list
+            // check that the caller is the Geode Legal root account
             let caller = Self::env().caller();
-            if self.geode_legal_delegates.contains(&caller) {
-                // if the new delegate is already in the delegates vector, do nothing
+            if self.geode_legal == caller {
+                // if the new delegate is already in the delegates vector,
+                // skip to updating their contact info
                 if self.geode_legal_delegates.contains(&add) {
                     // do nothing
                 }
                 else {
-                    // add the new delegate to the delegates list
-                    self.geode_legal_delegates.push(add);
-                    // add the new root to the allowed_user_map
-                    let new_user = UserDetails {
-                        user_acct: add,
-                        name: name,
-                        organization: organization,
-                        phone: phone,
-                        email: email,
-                    };
-                    self.allowed_user_map.insert(&add, &new_user);
+                    // add the new root to the delegates list
+                    self.geode_legal_delegates.insert(&add, &add);
+                    // and to the delegates_vec
+                    self.delegates_vec.push(&add);
                 }
+                // add or update the contact info to the allowed_user_map
+                let new_user = UserDetails {
+                    user_acct: add,
+                    name: name,
+                    organization: organization,
+                    phone: phone,
+                    email: email,
+                };
+                if self.allowed_user_map.try_insert(&add, &new_user).is_err() {
+                    return Err(Error::DataTooLarge);
+                }        
             }
             else {
-                // error
+                // error: this account is not allowed to take this action
                 return Err(Error::GenericError)
             }
             Ok(())
         }
 
 
-        // 🟢 REMOVE GEODE LEGAL DELEGATE (RESTRICTED: GEODE LEGAL OR DELEGATE)
-        // This message lets Geode Legal team accounts remove accounts from the legal team 
+        // 3 🟢 REMOVE GEODE LEGAL DELEGATE (RESTRICTED: GEODE LEGAL ROOT ONLY)
+        // This message lets Geode Legal root account remove accounts from the legal team 
         #[ink(message)]
         pub fn remove_geode_legal_delegate(&mut self, remove: AccountId) -> Result<(), Error> {
-            // check that the caller is on the delegates list
+            // check that the caller is the root user
             let caller = Self::env().caller();
-            if self.geode_legal_delegates.contains(&caller) {
+            if self.geode_legal == caller {
                 // if so, remove the delegate from geode_legal_delegates
-                self.geode_legal_delegates.retain(|value| *value != remove);
-                // remove them from allowed_user_map
-                self.allowed_user_map.remove(remove);
+                if self.geode_legal_delegates.contains(remove) {
+                    self.geode_legal_delegates.remove(remove);
+                }
+                // remove the delegate from allowed_user_map
+                if self.allowed_user_map.contains(remove) {
+                    self.allowed_user_map.remove(remove);
+                }
             }
-            // if not, return fail
+            // if the caller is not the root user, return fail
             else {
                 // error
                 return Err(Error::GenericError)
@@ -364,7 +377,7 @@ mod geode_suspicious_activity_reporting {
         }
 
 
-        // 🟢 ALLOW A LAW ENFORCEMENT ENTITY TO HAVE ACCESS (RESTRICTED: GEODE LEGAL OR DELEGATE)
+        // 4 🟢 ALLOW A LAW ENFORCEMENT ENTITY TO HAVE ACCESS (RESTRICTED: GEODE LEGAL OR DELEGATE)
         // This message allows the Geode Legal team to give access to law enforcement entities
         #[ink(message)]
         pub fn add_law_enforcement_access(&mut self, 
@@ -382,18 +395,24 @@ mod geode_suspicious_activity_reporting {
                     // do nothing
                 }
                 else {
-                    // add the new delegate to the allowed_entities list
-                    self.allowed_entities.push(add);
-                    // add the new root to the allowed_user_map
-                    let new_user = UserDetails {
-                        user_acct: add,
-                        name: name,
-                        organization: organization,
-                        phone: phone,
-                        email: email,
-                    };
-                    self.allowed_user_map.insert(&add, &new_user);
+                    // add the new entity to the allowed_entities list
+                    self.allowed_entities.insert(&add, &add);
+                    // and to the entities_vec
+                    self.entities_vec.push(&add);
+                    
                 }
+                // add or update the new entity in the allowed_user_map
+                let new_user = UserDetails {
+                    user_acct: add,
+                    name: name,
+                    organization: organization,
+                    phone: phone,
+                    email: email,
+                };
+                if self.allowed_user_map.try_insert(&add, &new_user).is_err() {
+                    return Err(Error::DataTooLarge);
+                }        
+
             }
             else {
                 // error
@@ -403,16 +422,20 @@ mod geode_suspicious_activity_reporting {
         }
 
 
-        // 🟢 REMOVE A LAW ENFORCEMENT ENTITY'S ACCESS (RESTRICTED: GEODE LEGAL OR DELEGATE)
+        // 5 🟢 REMOVE A LAW ENFORCEMENT ENTITY'S ACCESS (RESTRICTED: GEODE LEGAL OR DELEGATE)
         #[ink(message)]
         pub fn remove_law_enforcement_access(&mut self, remove: AccountId) -> Result<(), Error> {
             // check that the caller is on the delegates list
             let caller = Self::env().caller();
             if self.geode_legal_delegates.contains(&caller) {
                 // if so, remove the user from allowed_entities
-                self.allowed_entities.retain(|value| *value != remove);
+                if self.allowed_entities.contains(remove) {
+                    self.allowed_entities.remove(remove);
+                }
                 // remove them from allowed_user_map
-                self.allowed_user_map.remove(remove);
+                if self.allowed_user_map.contains(remove) {
+                    self.allowed_user_map.remove(remove);
+                }
             }
             // if not, return fail
             else {
@@ -427,27 +450,29 @@ mod geode_suspicious_activity_reporting {
         // MESSAGE FUNCTIONS THAT RETRIEVE DATA FROM STORAGE  >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-        // 🟢 VIEW ALL REPORTS (RESTRICTED: GEODE LEGAL OR DELEGATE OR ALLOWED ENTITIY)
+        // 6 🟢 VIEW ALL REPORTS (RESTRICTED: GEODE LEGAL OR DELEGATE OR ALLOWED ENTITIY)
         // this message is restricted to two types of users...
-        // Geode Legal - a single account in charge of SAR information requests
+        // Geode Legal - a single account in charge of SAR information requests and its delegates
         // Law Enforcement Entities - verified entities that can be given permission
         // to view reports by the Geode Legal account.
         #[ink(message)]
         pub fn view_all_reports(&self) -> Vec<Report> {
             let caller = Self::env().caller();
+            // set up return structure
+            let mut allreports: Vec<Report> = Vec::new();
             // check that the caller is on one of the allowed lists
             if self.allowed_entities.contains(&caller) || self.geode_legal_delegates.contains(&caller) {
-                // proceed...
-                let allreports = self.reports.clone();
-                allreports
+                // iterate through the report hashes in all_reports to get the details of each
+                for id in self.all_reports.iter() {
+                    let details = self.report_details.get(id).unwrap_or_default();
+                    allreports.push(details);
+                }
             }
-            else {
-                let allreports = <Vec<Report>>::default();
-                allreports
-            }
+            // return results
+            allreports
         }
 
-        // 🟢 VIEW LEGAL TEAM & ALLOWED ENTITIES (RESTRICTED: GEODE LEGAL OR DELEGATE)
+        // 7 🟢 VIEW LEGAL TEAM & ALLOWED ENTITIES (RESTRICTED: GEODE LEGAL OR DELEGATE)
         #[ink(message)]
         pub fn view_allowed_delegates_and_entities(&self) -> ViewAllowed {
             // set up the return structures
@@ -457,37 +482,44 @@ mod geode_suspicious_activity_reporting {
             // check that the caller is on the delegates list
             let caller = Self::env().caller();
             if self.geode_legal_delegates.contains(&caller) {
-                // for each account in geode_legal_delegates
-                for acct in &self.geode_legal_delegates {
-                    // get the UserDetails from allowed_user_map
-                    let details = self.allowed_user_map.get(&acct).unwrap_or_default();
-                    // add it to all_delegates
-                    all_delegates.push(details);
+                // for each account in geode_legal_delegates...
+                if self.delegates_vec.len() > 0 {
+                    for i in 0..self.delegates_vec.len() {
+                        // get the profile for the account
+                        let acct = self.delegates_vec.get(i).unwrap();
+                        if self.geode_legal_delegates.contains(&acct) {
+                            // get the UserDetails from allowed_user_map
+                            let details = self.allowed_user_map.get(&acct).unwrap_or_default();
+                            // add it to all_delegates
+                            all_delegates.push(details);
+                        }
+                        
+                    }
                 }
-                // for each account in allowed_entities
-                for acct in &self.allowed_entities {
-                    // get the UserDetails from allowed_user_map
-                    let details = self.allowed_user_map.get(&acct).unwrap_or_default();
-                    // add it to all_entities
-                    all_entities.push(details);
-                }
-                // package the results
-                let results = ViewAllowed {
-                    delegates: all_delegates,
-                    entities: all_entities,
-                };
-                results
-            }
-            // if not, return empty results
-            else {
-                let results = ViewAllowed {
-                    delegates: <Vec<UserDetails>>::default(),
-                    entities: <Vec<UserDetails>>::default(),
-                };
-                results
-            }
-        }
 
+                // for each account in allowed_entities...
+                if self.entities_vec.len() > 0 {
+                    for i in 0..self.entities_vec.len() {
+                        // get the profile for the account
+                        let acct = self.entities_vec.get(i).unwrap();
+                        if self.allowed_entities.contains(&acct) {
+                            // get the UserDetails from allowed_user_map
+                            let details = self.allowed_user_map.get(&acct).unwrap_or_default();
+                            // add it to all_entities
+                            all_entities.push(details);
+                        }
+                    }
+                }
+            }
+
+            // package the results
+            let results = ViewAllowed {
+                delegates: all_delegates,
+                entities: all_entities,
+            };
+            // return results
+            results
+        }
 
         // END OF MESSAGE FUNCTIONS
 
