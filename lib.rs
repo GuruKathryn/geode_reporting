@@ -75,23 +75,6 @@ mod geode_reporting {
         }
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    #[ink::scale_derive(Encode, Decode, TypeInfo)]
-    #[cfg_attr(feature = "std",derive(ink::storage::traits::StorageLayout,))]
-    pub struct ViewAllowed {
-        delegates: Vec<UserDetails>,
-        entities: Vec<UserDetails>,
-    }
-
-    impl Default for ViewAllowed {
-        fn default() -> ViewAllowed {
-            ViewAllowed {
-                delegates: <Vec<UserDetails>>::default(),
-                entities: <Vec<UserDetails>>::default(),
-            }
-        }
-    }
-
 
     // EVENT DEFINITIONS >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
@@ -133,12 +116,9 @@ mod geode_reporting {
         account_timer: Mapping<AccountId, u64>,
         all_reports: Vec<Hash>,
         report_details: Mapping<Hash, Report>,
-        allowed_entities: Mapping<AccountId, AccountId>,
-        geode_legal_delegates: Mapping<AccountId, AccountId>,
         geode_legal: AccountId,
         geodelegalset: u8,
         allowed_user_map: Mapping<AccountId, UserDetails>,
-        entities_vec: StorageVec<AccountId>,
         delegates_vec: StorageVec<AccountId>,
     }
 
@@ -155,12 +135,9 @@ mod geode_reporting {
                 account_timer: Mapping::default(),
                 all_reports: <Vec<Hash>>::default(),
                 report_details: Mapping::default(),
-                allowed_entities: Mapping::default(),
-                geode_legal_delegates: Mapping::default(),
                 geode_legal: AccountId::from([0x0; 32]),
                 geodelegalset: 0,
                 allowed_user_map: Mapping::default(),
-                entities_vec: StorageVec::default(),
                 delegates_vec: StorageVec::default(),
             }
         }
@@ -182,6 +159,13 @@ mod geode_reporting {
             crime_description: Vec<u8>,
             accused_user_location: Vec<u8>,
         ) -> Result<(), Error> {
+
+            // if the report data is too large, send an error 
+            if your_legal_name.len() > 200 || your_phone.len() > 40 
+            || geode_apps_where_this_happened.len() > 200 || activity_id_list.len() > 700
+            || crime_category.len() > 200 || crime_description.len() > 520 || accused_user_location.len() > 200 {
+                return Err(Error::DataTooLarge);
+            }
 
             let caller = Self::env().caller();
 
@@ -221,12 +205,9 @@ mod geode_reporting {
                     timestamp: new_timestamp,
                 };
                 // update contract storage
-                // if all_reports is full, keep only the 490 most recent hashes
-                if self.all_reports.len() < 490 {
-                    // all is well
-                }
-                else {
-                    // if all_reports hits 490, remove the oldest report.
+                // if all_reports is full, keep only the 250 most recent hashes
+                if self.all_reports.len() > 249 {
+                    // remove the oldest report
                     let oldest_id = self.all_reports[0];
                     self.all_reports.remove(0);
                     self.report_details.remove(oldest_id);
@@ -268,23 +249,18 @@ mod geode_reporting {
             phone: Vec<u8>,
             email: Vec<u8>,
         ) -> Result<(), Error> {
+
+            // if the data is too large, send an error
+            if name.len() > 200 || organization.len() > 200 || phone.len() > 40 || email.len() > 200 {
+                return Err(Error::DataTooLarge);
+            }
+
             let caller = Self::env().caller();
             // check that the Geode Legal root user is not yet set
             if self.geodelegalset != 1 || self.geode_legal == caller {
                 // proceed to set up the root user
                 self.geode_legal = new_geode_legal_root;
                 self.geodelegalset = 1;
-
-                // add the root user to the delegates team
-                if self.geode_legal_delegates.contains(&new_geode_legal_root) {
-                    // do nothing
-                }
-                else {
-                    // add the new root to the delegates list
-                    self.geode_legal_delegates.insert(&new_geode_legal_root, &new_geode_legal_root);
-                    // and to the delegates_vec
-                    self.delegates_vec.push(&new_geode_legal_root);
-                }
                 
                 // add the new root or update their info in the allowed_user_map
                 let new_user = UserDetails {
@@ -297,6 +273,9 @@ mod geode_reporting {
                 if self.allowed_user_map.try_insert(&new_geode_legal_root, &new_user).is_err() {
                     return Err(Error::DataTooLarge);
                 }        
+
+                // add the new root to the delegates_vec
+                self.delegates_vec.push(&new_geode_legal_root);
 
             }
             else {
@@ -318,17 +297,21 @@ mod geode_reporting {
             phone: Vec<u8>,
             email: Vec<u8>,
         ) -> Result<(), Error> {
+
+            // if the data is too large, send an error 
+            if name.len() > 200 || organization.len() > 200 || phone.len() > 40 || email.len() > 200 {
+                return Err(Error::DataTooLarge);
+            }
+
             // check that the caller is the Geode Legal root account
             let caller = Self::env().caller();
             if self.geode_legal == caller {
                 // if the new delegate is already in the delegates vector,
                 // skip to updating their contact info
-                if self.geode_legal_delegates.contains(&add) {
+                if self.allowed_user_map.contains(&add) {
                     // do nothing
                 }
                 else {
-                    // add the new root to the delegates list
-                    self.geode_legal_delegates.insert(&add, &add);
                     // and to the delegates_vec
                     self.delegates_vec.push(&add);
                 }
@@ -359,10 +342,6 @@ mod geode_reporting {
             // check that the caller is the root user
             let caller = Self::env().caller();
             if self.geode_legal == caller {
-                // if so, remove the delegate from geode_legal_delegates
-                if self.geode_legal_delegates.contains(remove) {
-                    self.geode_legal_delegates.remove(remove);
-                }
                 // remove the delegate from allowed_user_map
                 if self.allowed_user_map.contains(remove) {
                     self.allowed_user_map.remove(remove);
@@ -377,80 +356,11 @@ mod geode_reporting {
         }
 
 
-        // 4 🟢 ALLOW A LAW ENFORCEMENT ENTITY TO HAVE ACCESS (RESTRICTED: GEODE LEGAL OR DELEGATE)
-        // This message allows the Geode Legal team to give access to law enforcement entities
-        #[ink(message)]
-        pub fn add_law_enforcement_access(&mut self, 
-            add: AccountId,
-            name: Vec<u8>,
-            organization: Vec<u8>,
-            phone: Vec<u8>,
-            email: Vec<u8>,
-        ) -> Result<(), Error> {
-            // check that the caller is on the delegates list
-            let caller = Self::env().caller();
-            if self.geode_legal_delegates.contains(&caller) {
-                // if the new entity is already in the allowed_entities vector...
-                if self.allowed_entities.contains(&add) {
-                    // do nothing
-                }
-                else {
-                    // add the new entity to the allowed_entities list
-                    self.allowed_entities.insert(&add, &add);
-                    // and to the entities_vec
-                    self.entities_vec.push(&add);
-                    
-                }
-                // add or update the new entity in the allowed_user_map
-                let new_user = UserDetails {
-                    user_acct: add,
-                    name: name,
-                    organization: organization,
-                    phone: phone,
-                    email: email,
-                };
-                if self.allowed_user_map.try_insert(&add, &new_user).is_err() {
-                    return Err(Error::DataTooLarge);
-                }        
-
-            }
-            else {
-                // error
-                return Err(Error::GenericError)
-            }
-            Ok(())
-        }
-
-
-        // 5 🟢 REMOVE A LAW ENFORCEMENT ENTITY'S ACCESS (RESTRICTED: GEODE LEGAL OR DELEGATE)
-        #[ink(message)]
-        pub fn remove_law_enforcement_access(&mut self, remove: AccountId) -> Result<(), Error> {
-            // check that the caller is on the delegates list
-            let caller = Self::env().caller();
-            if self.geode_legal_delegates.contains(&caller) {
-                // if so, remove the user from allowed_entities
-                if self.allowed_entities.contains(remove) {
-                    self.allowed_entities.remove(remove);
-                }
-                // remove them from allowed_user_map
-                if self.allowed_user_map.contains(remove) {
-                    self.allowed_user_map.remove(remove);
-                }
-            }
-            // if not, return fail
-            else {
-                // error
-                return Err(Error::GenericError)
-            }
-            Ok(())
-        }
-
-
         // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         // MESSAGE FUNCTIONS THAT RETRIEVE DATA FROM STORAGE  >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
         // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
-        // 6 🟢 VIEW ALL REPORTS (RESTRICTED: GEODE LEGAL OR DELEGATE OR ALLOWED ENTITIY)
+        // 4 🟢 VIEW ALL REPORTS (RESTRICTED: GEODE LEGAL OR DELEGATE)
         // this message is restricted to two types of users...
         // Geode Legal - a single account in charge of SAR information requests and its delegates
         // Law Enforcement Entities - verified entities that can be given permission
@@ -460,8 +370,8 @@ mod geode_reporting {
             let caller = Self::env().caller();
             // set up return structure
             let mut allreports: Vec<Report> = Vec::new();
-            // check that the caller is on one of the allowed lists
-            if self.allowed_entities.contains(&caller) || self.geode_legal_delegates.contains(&caller) {
+            // check that the caller is on the allowed list
+            if self.allowed_user_map.contains(&caller) {
                 // iterate through the report hashes in all_reports to get the details of each
                 for id in self.all_reports.iter() {
                     let details = self.report_details.get(id).unwrap_or_default();
@@ -472,53 +382,33 @@ mod geode_reporting {
             allreports
         }
 
-        // 7 🟢 VIEW LEGAL TEAM & ALLOWED ENTITIES (RESTRICTED: GEODE LEGAL OR DELEGATE)
+        // 5 🟢 VIEW LEGAL TEAM (RESTRICTED: GEODE LEGAL OR DELEGATE)
         #[ink(message)]
-        pub fn view_allowed_delegates_and_entities(&self) -> ViewAllowed {
+        pub fn view_allowed_delegates(&self) -> Vec<UserDetails> {
             // set up the return structures
             let mut all_delegates: Vec<UserDetails> = Vec::new();
-            let mut all_entities: Vec<UserDetails> = Vec::new();
 
             // check that the caller is on the delegates list
             let caller = Self::env().caller();
-            if self.geode_legal_delegates.contains(&caller) {
+            if self.allowed_user_map.contains(&caller) {
+                
                 // for each account in geode_legal_delegates...
                 if self.delegates_vec.len() > 0 {
                     for i in 0..self.delegates_vec.len() {
                         // get the profile for the account
                         let acct = self.delegates_vec.get(i).unwrap();
-                        if self.geode_legal_delegates.contains(&acct) {
+                        if self.allowed_user_map.contains(&acct) {
                             // get the UserDetails from allowed_user_map
                             let details = self.allowed_user_map.get(&acct).unwrap_or_default();
                             // add it to all_delegates
                             all_delegates.push(details);
                         }
-                        
-                    }
-                }
-
-                // for each account in allowed_entities...
-                if self.entities_vec.len() > 0 {
-                    for i in 0..self.entities_vec.len() {
-                        // get the profile for the account
-                        let acct = self.entities_vec.get(i).unwrap();
-                        if self.allowed_entities.contains(&acct) {
-                            // get the UserDetails from allowed_user_map
-                            let details = self.allowed_user_map.get(&acct).unwrap_or_default();
-                            // add it to all_entities
-                            all_entities.push(details);
-                        }
                     }
                 }
             }
 
-            // package the results
-            let results = ViewAllowed {
-                delegates: all_delegates,
-                entities: all_entities,
-            };
             // return results
-            results
+            all_delegates
         }
 
         // END OF MESSAGE FUNCTIONS
